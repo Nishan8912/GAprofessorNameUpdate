@@ -1,19 +1,64 @@
-import fitz  # PyMuPDF
-import pytesseract
-from PIL import Image
-import io
 import re
-import PyPDF2
 import os
 import pandas as pd
 from collections import defaultdict
+from datetime import datetime, timedelta
 
-# Specify the correct path to the Tesseract executable
-pytesseract.pytesseract.tesseract_cmd = r'C:\Users\nishan2\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'
+# Function to correct common typos in month names
+def correct_month_name(month_name):
+    month_corrections = {
+        "Novermber": "November",
+        # Add other common typos if needed
+    }
+    return month_corrections.get(month_name, month_name)
+
+# Function to convert term into the last day of the month or specific date
+def convert_term_to_date(term):
+    # Match month-year format like "Apr 2021", "Fall 2025", etc.
+    month_year_pattern = r'([A-Za-z]+)\s?(\d{4})'
+    full_date_pattern = r'([A-Za-z]+)\s(\d{1,2}),\s(\d{4})'
+    season_to_date = {
+        "Fall": "12/31",
+        "Spring": "05/15",
+        "Summer": "08/15"
+    }
+    
+    # Check for Fall, Spring, Summer terms
+    for season in season_to_date:
+        if season.lower() in term.lower():
+            year = re.search(r'\d{4}', term).group()
+            return f"{season_to_date[season]}/{year}"
+    
+    # Check if it's a full date format like "August 1, 2022"
+    match = re.match(full_date_pattern, term)
+    if match:
+        month_name = correct_month_name(match.group(1))
+        day = match.group(2)
+        year = match.group(3)
+        return f"{datetime.strptime(f'{month_name} {day}, {year}', '%B %d, %Y').strftime('%m/%d/%Y')}"
+    
+    # Check if it's a month-year format like "Mar 2015"
+    match = re.match(month_year_pattern, term)
+    if match:
+        month_name = correct_month_name(match.group(1))
+        year = match.group(2)
+        try:
+            # Convert month name to month number
+            month = datetime.strptime(month_name[:3], "%b").month
+            # Get the last day of the month
+            last_day = datetime(year=int(year), month=month, day=1).replace(day=28) + timedelta(days=4)
+            last_day = last_day - timedelta(days=last_day.day)
+            return last_day.strftime('%m/%d/%Y')
+        except ValueError:
+            return term
+    
+    return "Ending term not found"
 
 def extract_name_from_filename(filename):
+    # Extract the base name of the file without the directory path
+    base_filename = os.path.basename(filename)
     # Regular expression to extract the name from the filename
-    match = re.match(r"(.+?)\s*(\w+\s+\d{4}|\w+\s+\d{1,2},\s*\d{4})", filename)
+    match = re.match(r"(.+?)\s*(\w+\s+\d{4}|\w+\s+\d{1,2},\s*\d{4})", base_filename)
     if match:
         name = match.group(1).replace('_', ' ').replace('.', ' ').strip()
         # Split the name and reverse the order
@@ -24,62 +69,13 @@ def extract_name_from_filename(filename):
     return "Name not found"
 
 def extract_date_from_filename(filename):
+    # Extract the base name of the file without the directory path
+    base_filename = os.path.basename(filename)
     # Regular expression to extract the date from the filename
-    match = re.search(r"(\w+\s+\d{4}|\w+\s+\d{1,2},\s*\d{4})", filename)
+    match = re.search(r"(\w+\s+\d{4}|\w+\s+\d{1,2},\s*\d{4})", base_filename)
     if match:
         return match.group(0).strip()
     return "Ending term not found"
-
-def read_pdf_fields(file_path):
-    with open(file_path, "rb") as file:
-        reader = PyPDF2.PdfReader(file)
-        fields = reader.get_fields()
-    return fields
-
-def extract_professor_name_and_ending_term(fields):
-    if fields is None:
-        return "Fields not found", "Fields not found"
-    
-    # Extract the professor's name and ending term date from the form fields
-    professor_name = fields.get('Name of applicant', {}).get('/V', 'Name not found')
-    ending_term = fields.get('Ending term', {}).get('/V', 'Ending term not found')
-    return professor_name, ending_term
-
-def read_pdf_text(file_path):
-    with open(file_path, "rb") as file:
-        reader = PyPDF2.PdfReader(file)
-        text = reader.pages[0].extract_text() if reader.pages else ""
-    return text
-
-def extract_ending_term_from_text(text):
-    # Regular expression to find the ending term date
-    ending_term_match = re.search(r"(\w+\s+\d{4})\s*(to|through)\s*(\w+\s+\d{4})", text)
-    if ending_term_match:
-        return ending_term_match.group(3).strip()
-    return "Ending term not found"
-
-def extract_information_from_ocr(pdf_path):
-    # Open the PDF file
-    document = fitz.open(pdf_path)
-    
-    # Read the first page
-    text = ""
-    page = document.load_page(0)
-    pix = page.get_pixmap()
-    img = Image.open(io.BytesIO(pix.tobytes()))
-    text += pytesseract.image_to_string(img)
-
-    # Extract the required information
-    lines = text.split('\n')
-    end_date = "Ending term not found"
-
-    for line in lines:
-        if re.search(r"Dates?:", line):
-            dates = re.split(r" to | through ", line)
-            if len(dates) == 2:
-                end_date = dates[1].strip()
-
-    return end_date
 
 def get_latest_pdf(files):
     latest_file = None
@@ -104,49 +100,37 @@ def process_pdfs_in_folder(folder_path):
     results = []
     grouped_files = defaultdict(list)
 
-    for filename in os.listdir(folder_path):
-        if filename.endswith(".pdf"):
-            name = re.split(r'[\s,_]', filename)[0]
-            grouped_files[name].append(filename)
+    for root, _, files in os.walk(folder_path):
+        for filename in files:
+            if filename.endswith(".pdf"):
+                name = re.split(r'[\s,_]', filename)[0]
+                grouped_files[name].append(os.path.join(root, filename))
 
     for name, files in grouped_files.items():
         latest_file = get_latest_pdf(files)
         if latest_file:
-            file_path = os.path.join(folder_path, latest_file)
             professor_name = extract_name_from_filename(latest_file)
             ending_term = extract_date_from_filename(latest_file)
-            fields = read_pdf_fields(file_path)
-            if fields:
-                professor_name, ending_term = extract_professor_name_and_ending_term(fields)
-            else:
-                text = read_pdf_text(file_path)
-                if text.strip():
-                    extracted_ending_term = extract_ending_term_from_text(text)
-                    if extracted_ending_term != "Ending term not found":
-                        ending_term = extracted_ending_term
-                else:
-                    extracted_ending_term = extract_information_from_ocr(file_path)
-                    if extracted_ending_term != "Ending term not found":
-                        ending_term = extracted_ending_term
+            department_name = os.path.basename(os.path.dirname(latest_file))
             results.append({
-                "File": latest_file,
+                "Department": department_name,
                 "Professor Name": professor_name,
-                "Ending Term": ending_term
+                "Ending Term": convert_term_to_date(ending_term),
+                "PDF File": os.path.basename(latest_file)
             })
 
     return results
 
 # Specify the folder path
-folder_path = "UpdateProfessor\data\Animal-and-Range-Sciences"
+folder_path = "UpdateProfessor/data"
 results = process_pdfs_in_folder(folder_path)
 
 # Create the resultCsv folder if it doesn't exist
 result_folder = "UpdateProfessor/resultCsv"
 os.makedirs(result_folder, exist_ok=True)
 
-# Save results to a CSV file with the folder name as the file name inside the resultCsv folder
-folder_name = os.path.basename(folder_path)
-csv_file_name = os.path.join(result_folder, f"{folder_name}.csv")
+# Save results to a single CSV file with department name, professor name, ending term, and PDF file name
+csv_file_name = os.path.join(result_folder, "all_departments.csv")
 df = pd.DataFrame(results)
 df.to_csv(csv_file_name, index=False)
 

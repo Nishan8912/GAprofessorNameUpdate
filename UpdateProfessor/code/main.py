@@ -54,11 +54,11 @@ def process_pdfs_in_folder(folder_path):
     return results
 
 # Specify the folder path
-folder_path = "data\Biology"
+folder_path = "UpdateProfessor\data\Biology"
 results = process_pdfs_in_folder(folder_path)
 
 # Create the resultCsv folder if it doesn't exist
-result_folder = "resultCsv"
+result_folder = "UpdateProfessor\resultCsv"
 os.makedirs(result_folder, exist_ok=True)
 
 # Save results to a CSV file with the folder name as the file name inside the resultCsv folder
